@@ -21,6 +21,28 @@ except ImportError:
     HAVE_FLASH_ATTN = False
 
 
+def apply_rope(x, rope_vals):
+    # x has shape [b,s,h,d]
+    # rope_vals has shape [b,s,d]
+    print(f"before {x=}")
+    b, s, h, dim = x.shape
+    assert rope_vals.shape == (b, s, dim), f"{rope_vals.shape=} != {(b, s, dim)}"
+    assert (dim // 2) * 2 == dim, f"{dim} is not even"
+
+    x = x.reshape(b, s, h, -1, 2)
+    rope_vals = rope_vals.reshape(b, s, 1, -1, 2)
+
+    out = torch.stack(
+        [
+            x[..., 0] * rope_vals[..., 0] - x[..., 1] * rope_vals[..., 1],
+            x[..., 1] * rope_vals[..., 0] + x[..., 0] * rope_vals[..., 1],
+        ],
+        -1,
+    ).view(b, s, h, dim)
+    print(f"after {out=}")
+    return out
+
+
 class MultiHeadAttention(torch.nn.Module):
     """
     An implementation of multi-head attention, heavily relying on the pytorch
@@ -287,6 +309,7 @@ class MultiHeadAttention(torch.nn.Module):
         reuse_first_head_kv: bool = False,
         only_cache_first_head_kv: bool = False,
         use_cached_kv: bool = False,
+        rope_vals: torch.Tensor | None = None,  # shape: [..., batch, seq_len, head dim]
     ):
         """X is the current hidden and has a shape of [batch, ..., seq_len, input_size].
         If keys and values are present in the cache and 'freeze_kv' is not set, they
@@ -305,6 +328,8 @@ class MultiHeadAttention(torch.nn.Module):
 
         # Flatten the batch dimensions
         x, x_kv, x_shape_after_transpose = self._rearrange_inputs_to_flat_batch(x, x_kv)
+        if rope_vals is not None:
+            rope_vals = rope_vals.view(-1, *rope_vals.shape[-2:])
 
         nhead_kv = 1 if reuse_first_head_kv else self._nhead_kv
 
@@ -358,6 +383,7 @@ class MultiHeadAttention(torch.nn.Module):
             allow_inplace=allow_inplace,
             save_peak_mem_factor=save_peak_mem_factor,
             reuse_first_head_kv=reuse_first_head_kv,
+            rope_vals=rope_vals,
         )
         return output.reshape(x_shape_after_transpose[:-1] + output.shape[-1:])
 
@@ -471,10 +497,12 @@ class MultiHeadAttention(torch.nn.Module):
         cache_kv: bool,
         use_cached_kv: bool,
         reuse_first_head_kv: bool,
+        rope_vals: torch.Tensor | None = None,  # shape: [batch, seq_len, head dim]
     ) -> torch.Tensor:
         """Attention computation.
         Called by 'forward', potentially on shards, once shapes have been normalized.
         """
+        print(f"in {x=}")
         q, k, v, kv, qkv = self.compute_qkv(
             x,
             x_kv,
@@ -485,7 +513,27 @@ class MultiHeadAttention(torch.nn.Module):
             use_cached_kv=use_cached_kv,
             reuse_first_head_kv=reuse_first_head_kv,
         )
-        attention_head_outputs = MultiHeadAttention.compute_attention_heads(
+
+        if rope_vals is not None:
+            print(f"{rope_vals.shape=}")
+            if q is not None:
+                print(f"{q.shape=} {q=}")
+                q = apply_rope(q, rope_vals)
+            if k is not None:
+                print(f"{k.shape=}")
+                k = apply_rope(k, rope_vals[:, : k.shape[1]])
+            if kv is not None:
+                print(f"{kv.shape=}")
+                kv[..., 0, :, :] = apply_rope(
+                    kv[..., 0, :, :], rope_vals[:, : kv.shape[1]]
+                )
+            if qkv is not None:
+                print(f"{qkv.shape=}")
+                qkv[..., 0, :, :] = apply_rope(qkv[..., 0, :, :], rope_vals)
+                qkv[..., 1, :, :] = apply_rope(qkv[..., 1, :, :], rope_vals)
+                qkv[..., 2, :, :] = apply_rope(qkv[..., 2, :, :], rope_vals)
+
+        attention_head_outputs = self.compute_attention_heads(
             q,
             k,
             v,

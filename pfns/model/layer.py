@@ -191,6 +191,7 @@ class PerFeatureLayer(Module):
         *,
         cache_trainset_representation: bool = False,
         att_src: Tensor | None = None,
+        rope_vals: torch.Tensor | None = None,
     ) -> Tensor:
         """Pass the input through the encoder layer.
 
@@ -271,6 +272,7 @@ class PerFeatureLayer(Module):
                         allow_inplace=True,
                         use_cached_kv=not single_eval_pos,
                         reuse_first_head_kv=True,
+                        rope_vals=rope_vals.transpose(1, 2),
                     ).transpose(1, 2)
                 else:
                     new_x_test = None
@@ -285,6 +287,7 @@ class PerFeatureLayer(Module):
                         add_input=True,
                         allow_inplace=True,
                         use_cached_kv=False,
+                        rope_vals=rope_vals.transpose(1, 2),
                     ).transpose(1, 2)
                 else:
                     new_x_train = None
@@ -308,6 +311,7 @@ class PerFeatureLayer(Module):
                 add_input=True,
                 allow_inplace=True,
                 use_cached_kv=cache_trainset_representation and not single_eval_pos,
+                rope_vals=rope_vals.transpose(1, 2),
             ).transpose(1, 2)
 
         # the mlp tends to require 8 times more memory at its peak, that is why we use 8 here

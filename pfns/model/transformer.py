@@ -69,6 +69,7 @@ class TableTransformer(nn.Module):
         y_style_encoder: nn.Module | None = None,
         attention_between_features: bool = True,
         batch_first: bool = True,
+        use_rope: bool = False,
         **layer_kwargs: Any,
     ):
         """Initializes the PerFeatureTransformer module.
@@ -160,6 +161,7 @@ class TableTransformer(nn.Module):
         self.cached_embeddings: torch.Tensor | None = None
         self.attention_between_features = attention_between_features
         self.batch_first = batch_first
+        self.use_rope = use_rope
 
         def layer_creator():
             return PerFeatureLayer(
@@ -513,6 +515,29 @@ class TableTransformer(nn.Module):
         ):
             extra_encoders_args["categorical_inds"] = categorical_inds_to_use
 
+        print(f"{x["main"]=}")
+
+        if self.use_rope:
+            assert (
+                self.attention_between_features
+            ), "Rope only supported for attention_between_features=True"
+            assert (
+                self.features_per_group == 1
+            ), "Rope only supported for features_per_group=1"
+            print(f"{x['main'].shape=}")
+            head_dim = self.ninp // self.nhead
+            rope_vals_x = get_rope_vals(x["main"].flatten(), head_dim).view(
+                _batch_size, _seq_len, num_groups_main, head_dim
+            )
+            rope_vals_y = torch.ones_like(rope_vals_x[:, :, :1, :]).view(
+                _batch_size, _seq_len, 1, -1, 2
+            )
+            rope_vals_y[..., 1] = 0.0
+            rope_vals_y = rope_vals_y.view(_batch_size, _seq_len, 1, head_dim)
+            rope_vals = torch.cat((rope_vals_x, rope_vals_y), dim=2)
+        else:
+            rope_vals = None
+
         for k in x:
             x[k] = einops.rearrange(x[k], "b s f n -> s (b f) n")
 
@@ -610,8 +635,10 @@ class TableTransformer(nn.Module):
             )
         del embedded_y, embedded_x
 
+        print(f"{embedded_input=}")
         encoder_out = self.transformer_layers(
             embedded_input,  # (b s_effective (num_groups+1_for_y) e)
+            rope_vals=rope_vals,
             single_eval_pos=current_context_len,  # Pass the context length including style
             half_layers=half_layers,
             cache_trainset_representation=self.cache_trainset_representation,
@@ -826,3 +853,20 @@ def isolate_torch_rng(seed: int, device: torch.device) -> Generator[None, None, 
         torch.set_rng_state(torch_rng_state)
         if torch.cuda.is_available():
             torch.cuda.set_rng_state(torch_cuda_rng_state, device=device)
+
+
+def get_rope_vals(inputs: torch.Tensor, dim: int, base: int = 10_000):
+    # inputs has to have shape [b]
+
+    assert (dim // 2) * 2 == dim, f"{dim=} not divisible by 2"
+
+    theta = 1000.0 / (
+        base
+        ** (torch.arange(0, dim, 2, device=inputs.device)[: (dim // 2)].float() / dim)
+    )
+
+    deg = torch.einsum("b,d->bd", inputs, theta)
+
+    rope_vals = torch.stack([torch.cos(deg), torch.sin(deg)], dim=-1)  # b d/2 2
+
+    return rope_vals.view(-1, dim)
