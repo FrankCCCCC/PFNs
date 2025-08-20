@@ -255,6 +255,9 @@ class PerFeatureLayer(Module):
             )
 
         def attn_between_items(x: torch.Tensor) -> torch.Tensor:
+            transposed_rope_vals = (
+                rope_vals.transpose(1, 2) if rope_vals is not None else None
+            )
             # we need to transpose as self attention always treats
             # dim -2 as the sequence dimension
             if self.multiquery_item_attention_for_test_set:
@@ -272,7 +275,7 @@ class PerFeatureLayer(Module):
                         allow_inplace=True,
                         use_cached_kv=not single_eval_pos,
                         reuse_first_head_kv=True,
-                        rope_vals=rope_vals.transpose(1, 2),
+                        rope_vals=transposed_rope_vals,
                     ).transpose(1, 2)
                 else:
                     new_x_test = None
@@ -287,7 +290,7 @@ class PerFeatureLayer(Module):
                         add_input=True,
                         allow_inplace=True,
                         use_cached_kv=False,
-                        rope_vals=rope_vals.transpose(1, 2),
+                        rope_vals=transposed_rope_vals,
                     ).transpose(1, 2)
                 else:
                     new_x_train = None
@@ -311,7 +314,7 @@ class PerFeatureLayer(Module):
                 add_input=True,
                 allow_inplace=True,
                 use_cached_kv=cache_trainset_representation and not single_eval_pos,
-                rope_vals=rope_vals.transpose(1, 2),
+                rope_vals=transposed_rope_vals,
             ).transpose(1, 2)
 
         # the mlp tends to require 8 times more memory at its peak, that is why we use 8 here
