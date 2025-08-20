@@ -24,7 +24,6 @@ except ImportError:
 def apply_rope(x, rope_vals):
     # x has shape [b,s,h,d]
     # rope_vals has shape [b,s,d]
-    print(f"before {x=}")
     b, s, h, dim = x.shape
     assert rope_vals.shape == (b, s, dim), f"{rope_vals.shape=} != {(b, s, dim)}"
     assert (dim // 2) * 2 == dim, f"{dim} is not even"
@@ -39,7 +38,6 @@ def apply_rope(x, rope_vals):
         ],
         -1,
     ).view(b, s, h, dim)
-    print(f"after {out=}")
     return out
 
 
@@ -502,7 +500,6 @@ class MultiHeadAttention(torch.nn.Module):
         """Attention computation.
         Called by 'forward', potentially on shards, once shapes have been normalized.
         """
-        print(f"in {x=}")
         q, k, v, kv, qkv = self.compute_qkv(
             x,
             x_kv,
@@ -515,20 +512,15 @@ class MultiHeadAttention(torch.nn.Module):
         )
 
         if rope_vals is not None:
-            print(f"{rope_vals.shape=}")
             if q is not None:
-                print(f"{q.shape=} {q=}")
                 q = apply_rope(q, rope_vals)
             if k is not None:
-                print(f"{k.shape=}")
                 k = apply_rope(k, rope_vals[:, : k.shape[1]])
             if kv is not None:
-                print(f"{kv.shape=}")
                 kv[..., 0, :, :] = apply_rope(
                     kv[..., 0, :, :], rope_vals[:, : kv.shape[1]]
                 )
             if qkv is not None:
-                print(f"{qkv.shape=}")
                 qkv[..., 0, :, :] = apply_rope(qkv[..., 0, :, :], rope_vals)
                 qkv[..., 1, :, :] = apply_rope(qkv[..., 1, :, :], rope_vals)
                 qkv[..., 2, :, :] = apply_rope(qkv[..., 2, :, :], rope_vals)

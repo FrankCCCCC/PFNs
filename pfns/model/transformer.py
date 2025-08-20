@@ -515,8 +515,6 @@ class TableTransformer(nn.Module):
         ):
             extra_encoders_args["categorical_inds"] = categorical_inds_to_use
 
-        print(f"{x["main"]=}")
-
         if self.use_rope:
             assert (
                 self.attention_between_features
@@ -524,7 +522,6 @@ class TableTransformer(nn.Module):
             assert (
                 self.features_per_group == 1
             ), "Rope only supported for features_per_group=1"
-            print(f"{x['main'].shape=}")
             head_dim = self.ninp // self.nhead
             rope_vals_x = get_rope_vals(x["main"].flatten(), head_dim).view(
                 _batch_size, _seq_len, num_groups_main, head_dim
@@ -635,7 +632,6 @@ class TableTransformer(nn.Module):
             )
         del embedded_y, embedded_x
 
-        print(f"{embedded_input=}")
         encoder_out = self.transformer_layers(
             embedded_input,  # (b s_effective (num_groups+1_for_y) e)
             rope_vals=rope_vals,
