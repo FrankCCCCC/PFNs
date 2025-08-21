@@ -1,5 +1,6 @@
 import typing as tp
 from dataclasses import dataclass
+from typing import Literal
 
 from pfns import base_config
 from pfns.model import encoders, transformer
@@ -29,6 +30,9 @@ class TransformerConfig(base_config.BaseConfig):
     features_per_group: int = 1
     attention_between_features: bool = True
     model_extra_args: tp.Dict[str, base_config.BaseTypes] | None = None
+    multiquery_item_attention_for_test_set: bool = False
+    activation: Literal["gelu", "relu"] = "relu"
+    recompute_layer: bool = False
     use_rope: bool = False
     rope_multiplier: float = 1
 
@@ -83,6 +87,9 @@ class TransformerConfig(base_config.BaseConfig):
             style_encoder=style_encoder,
             y_style_encoder=y_style_encoder,
             batch_first=True,  # model is batch_first by default now
+            multiquery_item_attention_for_test_set=self.multiquery_item_attention_for_test_set,
+            activation=self.activation,
+            recompute_layer=self.recompute_layer,
             use_rope=self.use_rope,
             rope_multiplier=self.rope_multiplier,
             **(self.model_extra_args or {}),
