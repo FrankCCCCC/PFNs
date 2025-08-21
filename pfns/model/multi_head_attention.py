@@ -523,7 +523,6 @@ class MultiHeadAttention(torch.nn.Module):
             if qkv is not None:
                 qkv[..., 0, :, :] = apply_rope(qkv[..., 0, :, :], rope_vals)
                 qkv[..., 1, :, :] = apply_rope(qkv[..., 1, :, :], rope_vals)
-                qkv[..., 2, :, :] = apply_rope(qkv[..., 2, :, :], rope_vals)
 
         attention_head_outputs = self.compute_attention_heads(
             q,
