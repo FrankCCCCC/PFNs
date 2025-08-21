@@ -70,6 +70,7 @@ class TableTransformer(nn.Module):
         attention_between_features: bool = True,
         batch_first: bool = True,
         use_rope: bool = False,
+        rope_multiplier: float = 1,
         **layer_kwargs: Any,
     ):
         """Initializes the PerFeatureTransformer module.
@@ -162,6 +163,7 @@ class TableTransformer(nn.Module):
         self.attention_between_features = attention_between_features
         self.batch_first = batch_first
         self.use_rope = use_rope
+        self.rope_multiplier = rope_multiplier
 
         def layer_creator():
             return PerFeatureLayer(
@@ -523,9 +525,9 @@ class TableTransformer(nn.Module):
                 self.features_per_group == 1
             ), "Rope only supported for features_per_group=1"
             head_dim = self.ninp // self.nhead
-            rope_vals_x = get_rope_vals(x["main"].flatten(), head_dim).view(
-                _batch_size, _seq_len, num_groups_main, head_dim
-            )
+            rope_vals_x = get_rope_vals(
+                x["main"].flatten(), head_dim, multiplier=self.rope_multiplier
+            ).view(_batch_size, _seq_len, num_groups_main, head_dim)
             rope_vals_y = torch.ones_like(rope_vals_x[:, :, :1, :]).view(
                 _batch_size, _seq_len, 1, -1, 2
             )
@@ -851,14 +853,23 @@ def isolate_torch_rng(seed: int, device: torch.device) -> Generator[None, None, 
             torch.cuda.set_rng_state(torch_cuda_rng_state, device=device)
 
 
-def get_rope_vals(inputs: torch.Tensor, dim: int, base: int = 10_000):
+def get_rope_vals(
+    inputs: torch.Tensor, dim: int, base: int = 10_000, multiplier: float = 1.0
+):
     # inputs has to have shape [b]
 
     assert (dim // 2) * 2 == dim, f"{dim=} not divisible by 2"
 
-    theta = 1000.0 / (
-        base
-        ** (torch.arange(0, dim, 2, device=inputs.device)[: (dim // 2)].float() / dim)
+    theta = (
+        multiplier
+        * 1000.0
+        / (
+            base
+            ** (
+                torch.arange(0, dim, 2, device=inputs.device)[: (dim // 2)].float()
+                / dim
+            )
+        )
     )
 
     deg = torch.einsum("b,d->bd", inputs, theta)

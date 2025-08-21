@@ -30,6 +30,7 @@ class TransformerConfig(base_config.BaseConfig):
     attention_between_features: bool = True
     model_extra_args: tp.Dict[str, base_config.BaseTypes] | None = None
     use_rope: bool = False
+    rope_multiplier: float = 1
 
     def create_model(self) -> transformer.TableTransformer:
         # Resolve criterion
@@ -83,6 +84,7 @@ class TransformerConfig(base_config.BaseConfig):
             y_style_encoder=y_style_encoder,
             batch_first=True,  # model is batch_first by default now
             use_rope=self.use_rope,
+            rope_multiplier=self.rope_multiplier,
             **(self.model_extra_args or {}),
         )
         model.criterion = criterion
