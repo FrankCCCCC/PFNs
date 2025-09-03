@@ -4,7 +4,7 @@ from typing import Callable, List, Tuple
 import numpy as np
 import torch
 
-from .ops import binary_ops, unary_ops
+from .ops import binary_ops, MAX_OP_OR_INPUT_KEY_LENGTH, unary_ops
 
 node_dtype = np.dtype(
     [
@@ -14,7 +14,7 @@ node_dtype = np.dtype(
         ),  # The type of the node can be 'binary', 'unary', or 'leaf'
         (
             "op_or_input",
-            "U12",
+            f"U{MAX_OP_OR_INPUT_KEY_LENGTH}",
         ),  # The operation (e.g. 'add') or input index, if it is a leaf.
         (
             "left",
