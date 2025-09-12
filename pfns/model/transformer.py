@@ -71,6 +71,7 @@ class TableTransformer(nn.Module):
         batch_first: bool = True,
         use_rope: bool = False,
         rope_multiplier: float = 1,
+        positions_num_measures: int = 0,
         **layer_kwargs: Any,
     ):
         """Initializes the PerFeatureTransformer module.
@@ -164,6 +165,7 @@ class TableTransformer(nn.Module):
         self.batch_first = batch_first
         self.use_rope = use_rope
         self.rope_multiplier = rope_multiplier
+        self.positions_num_measures = positions_num_measures
 
         def layer_creator():
             return PerFeatureLayer(
@@ -176,6 +178,7 @@ class TableTransformer(nn.Module):
                     precomputed_kv.pop(0) if precomputed_kv is not None else None
                 ),
                 attention_between_features=attention_between_features,
+                positions_num_measures=positions_num_measures,
                 **layer_kwargs,
             )
 
@@ -253,7 +256,6 @@ class TableTransformer(nn.Module):
                     these are shared between the datasets within a batch.
                 - `half_layers`: Whether to use the first half of the layers.
         """
-
         # Prepare batch-first versions of x, y, test_x for _forward
         # and clone all to be sure not to change outside data
         x_bf = x.clone() if x is not None else None
@@ -503,6 +505,38 @@ class TableTransformer(nn.Module):
             cache_trainset_representation=self.cache_trainset_representation,
         ).transpose(0, 1)
 
+        rope_vals = None
+        positions = None
+        if self.use_rope or self.positions_num_measures > 0:
+            assert (
+                self.attention_between_features
+            ), "Rope only supported for attention_between_features=True"
+            assert (
+                self.features_per_group == 1
+            ), "Rope only supported for features_per_group=1"
+            assert not (
+                self.use_rope and (self.positions_num_measures > 0)
+            ), "Rope and positions_num_measures > 0 not supported at the same time"
+            if self.use_rope:
+                head_dim = self.ninp // self.nhead
+                rope_vals_x = get_rope_vals(
+                    x["main"].flatten(), head_dim, multiplier=self.rope_multiplier
+                ).view(_batch_size, _seq_len, num_groups_main, head_dim)
+                rope_vals_y = torch.ones_like(rope_vals_x[:, :, :1, :]).view(
+                    _batch_size, _seq_len, 1, -1, 2
+                )
+                rope_vals_y[..., 1] = 0.0
+                rope_vals_y = rope_vals_y.view(_batch_size, _seq_len, 1, head_dim)
+                rope_vals = torch.cat((rope_vals_x, rope_vals_y), dim=2)
+            else:
+                assert (
+                    "main" in y and len(y) == 1
+                ), "Positions in attention only supported for simple y"
+                # [batch, seqlen_q, num_feature_blocks, 1]
+                positions = x["main"]  # [_batch_size, _seq_len, num_groups_main, 1]
+                # add positions for y [_batch_size, _seq_len, 1]
+                positions = torch.cat((positions, y["main"].unsqueeze(2)), dim=2)
+
         del y, y_for_y_encoder
         if torch.isnan(embedded_y).any():
             raise ValueError(
@@ -516,26 +550,6 @@ class TableTransformer(nn.Module):
             SequentialEncoder,
         ):
             extra_encoders_args["categorical_inds"] = categorical_inds_to_use
-
-        if self.use_rope:
-            assert (
-                self.attention_between_features
-            ), "Rope only supported for attention_between_features=True"
-            assert (
-                self.features_per_group == 1
-            ), "Rope only supported for features_per_group=1"
-            head_dim = self.ninp // self.nhead
-            rope_vals_x = get_rope_vals(
-                x["main"].flatten(), head_dim, multiplier=self.rope_multiplier
-            ).view(_batch_size, _seq_len, num_groups_main, head_dim)
-            rope_vals_y = torch.ones_like(rope_vals_x[:, :, :1, :]).view(
-                _batch_size, _seq_len, 1, -1, 2
-            )
-            rope_vals_y[..., 1] = 0.0
-            rope_vals_y = rope_vals_y.view(_batch_size, _seq_len, 1, head_dim)
-            rope_vals = torch.cat((rope_vals_x, rope_vals_y), dim=2)
-        else:
-            rope_vals = None
 
         for k in x:
             x[k] = einops.rearrange(x[k], "b s f n -> s (b f) n")
@@ -637,6 +651,7 @@ class TableTransformer(nn.Module):
         encoder_out = self.transformer_layers(
             embedded_input,  # (b s_effective (num_groups+1_for_y) e)
             rope_vals=rope_vals,
+            positions=positions,
             single_eval_pos=current_context_len,  # Pass the context length including style
             half_layers=half_layers,
             cache_trainset_representation=self.cache_trainset_representation,

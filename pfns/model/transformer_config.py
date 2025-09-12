@@ -35,6 +35,7 @@ class TransformerConfig(base_config.BaseConfig):
     recompute_layer: bool = False
     use_rope: bool = False
     rope_multiplier: float = 1
+    positions_num_measures: int = 0
 
     def create_model(self) -> transformer.TableTransformer:
         # Resolve criterion
@@ -92,6 +93,7 @@ class TransformerConfig(base_config.BaseConfig):
             recompute_layer=self.recompute_layer,
             use_rope=self.use_rope,
             rope_multiplier=self.rope_multiplier,
+            positions_num_measures=self.positions_num_measures,
             **(self.model_extra_args or {}),
         )
         model.criterion = criterion
