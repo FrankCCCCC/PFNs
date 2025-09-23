@@ -86,9 +86,10 @@ class _BatchedIterableDataset(IterableDataset[Batch]):
 
             b = self.get_batch_method(**kwargs)
 
-            assert (
-                len(b.x) == len(b.y) == len(b.target_y) == batch_shape.batch_size
-            ), "Our code was updated to use the more intuitive batch first format, please make sure your get_batch function returns data with shapes (batch_size, seq_len, ...)"
+            if b.y is not None:
+                assert (
+                    len(b.x) == len(b.y) == len(b.target_y) == batch_shape.batch_size
+                ), "Our code was updated to use the more intuitive batch first format, please make sure your get_batch function returns data with shapes (batch_size, seq_len, ...)"
 
             # Ensure single_eval_pos is set on the batch object if get_batch_method doesn't handle it
             if b.single_eval_pos is None:

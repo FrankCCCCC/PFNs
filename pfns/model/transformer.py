@@ -72,6 +72,7 @@ class TableTransformer(nn.Module):
         use_rope: bool = False,
         rope_multiplier: float = 1,
         positions_num_measures: int = 0,
+        x_only_mode: bool = False,
         **layer_kwargs: Any,
     ):
         """Initializes the PerFeatureTransformer module.
@@ -149,7 +150,7 @@ class TableTransformer(nn.Module):
             print("Using linear x encoder, as no encoder was provided.")
             encoder = get_linear_x_encoder(ninp, features_per_group)
 
-        if y_encoder is None:
+        if y_encoder is None and not x_only_mode:
             print("Using linear y encoder, as no y_encoder was provided.")
             y_encoder = get_linear_y_encoder(ninp)
 
@@ -222,6 +223,16 @@ class TableTransformer(nn.Module):
             assert attention_between_features, "Attention between features must be True when using a y_style_encoder, otherwise only use a style_encoder."
         self.y_style_encoder = y_style_encoder
 
+        if x_only_mode:
+            assert (
+                attention_between_features
+            ), "attention_between_features must be True when x_only_mode is True"
+            assert (
+                features_per_group == 1
+            ), "features_per_group must be 1 when x_only_mode is True"
+
+        self.x_only_mode = x_only_mode
+
     def forward(
         self,
         x: torch.Tensor | None,
@@ -277,11 +288,16 @@ class TableTransformer(nn.Module):
         # Determine single_eval_pos based on the original y shape
         if y_bf is not None:
             single_eval_pos = y_bf.shape[1]
+        elif self.x_only_mode:
+            single_eval_pos = x_bf.shape[1]
         else:
             single_eval_pos = None
 
         # Handle cache_trainset_representation and combining x, test_x
         if self.cache_trainset_representation and y is None:
+            assert (
+                not self.x_only_mode
+            ), "x_only_mode is not supported when cache_trainset_representation is True"
             assert (
                 (test_x is None) != (x is None)
             ), "Provide the test inputs only via test_x or x, not both, when cache_trainset_representation is True"
@@ -292,7 +308,7 @@ class TableTransformer(nn.Module):
                 x_bf is not None
             ), "x must be provided when not predicting from cached trainset representations"
             assert (
-                y is not None
+                y is not None or self.x_only_mode
             ), "y must be provided when not predicting from cached trainset representations"
 
             if test_x_bf is not None:
@@ -341,12 +357,19 @@ class TableTransformer(nn.Module):
                     y is None
                 ), "_forward expects y=None if single_eval_pos is 0/None and caching"
         else:
-            assert (
-                y is not None
-            ), "_forward expects y if not caching for pure inference or during training"
+            if not self.x_only_mode:
+                assert (
+                    y is not None
+                ), "_forward expects y if not caching for pure inference or during training"
+
             assert (
                 single_eval_pos is not None
             ), "_forward expects single_eval_pos if not caching for pure inference or during training"
+
+        if self.use_rope or (self.positions_num_measures > 0):
+            assert (
+                not self.x_only_mode
+            ), "Rope/Positional Embs only supported for x_only_mode=False"
 
         # single_eval_pos is the length of the training sequence part.
         # If None (e.g. pure inference from cache), treat as 0.
@@ -361,7 +384,7 @@ class TableTransformer(nn.Module):
         _batch_size, _seq_len, _num_features_orig_main = x["main"].shape
 
         if (
-            y is None
+            y is None and not self.x_only_mode
         ):  # Should only happen if self.cache_trainset_representation and not single_eval_pos
             y_main_ref = x["main"]
             y = {
@@ -457,92 +480,96 @@ class TableTransformer(nn.Module):
 
             categorical_inds_to_use = new_categorical_inds
 
-        for k in y:
-            # y[k] is (batch_size, current_seq_len_y, num_targets_y)
-            if y[k].ndim == 2:  # (B,S) or (B,T)
-                y[k] = y[k].unsqueeze(-1)  # B S -> B S 1
-
-            # Pad y sequence length if shorter than x's sequence length (_seq_len)
-            if y[k].shape[1] < _seq_len:  # _seq_len is full sequence length from x
-                # current_context_len is the length of the training part of y
-                assert (
-                    y[k].shape[1]
-                    == current_context_len  # y should only contain train part if shorter
-                    or y[k].shape[1] == _seq_len  # Should not happen if already shorter
-                ), f"y[{k}] seq len {y[k].shape[1]} vs train_seq_len {current_context_len} vs x_seq_len {_seq_len}"
-
-                # Only pad if y is for training part or not main y (auxiliary targets might be full length)
-                if k != "main" or y[k].shape[1] == current_context_len:
-                    y[k] = torch.cat(
-                        (
-                            y[k],
-                            torch.nan
-                            * torch.zeros(
-                                y[k].shape[0],  # batch_size
-                                _seq_len - y[k].shape[1],  # seq_len difference
-                                y[k].shape[2],  # num_targets_y
-                                device=y[k].device,
-                                dtype=y[k].dtype,
-                            ),
-                        ),
-                        dim=1,  # Pad along sequence dimension (dim 1 for batch-first)
-                    )
-        # Now y[k] is (batch_size, _seq_len, num_targets_y)
-
-        # Making sure no label leakage ever happens for y["main"] (batch-first indexing)
-        # current_context_len is the length of the training data part
-        if "main" in y and y["main"].shape[1] > current_context_len:
-            y["main"][:, current_context_len:] = torch.nan
-
-        # Prepare y for y_encoder (transpose to sequence-first if y_encoder expects it)
-        y_for_y_encoder = {}
-        for k_enc, v_enc in y.items():
-            y_for_y_encoder[k_enc] = v_enc.transpose(0, 1)  # B S T -> S B T
-
-        embedded_y = self.y_encoder(
-            y_for_y_encoder,
-            single_eval_pos=current_context_len,  # Length of training part for y_encoder
-            cache_trainset_representation=self.cache_trainset_representation,
-        ).transpose(0, 1)
-
         rope_vals = None
         positions = None
-        if self.use_rope or self.positions_num_measures > 0:
-            assert (
-                self.attention_between_features
-            ), "Rope only supported for attention_between_features=True"
-            assert (
-                self.features_per_group == 1
-            ), "Rope only supported for features_per_group=1"
-            assert not (
-                self.use_rope and (self.positions_num_measures > 0)
-            ), "Rope and positions_num_measures > 0 not supported at the same time"
-            if self.use_rope:
-                head_dim = self.ninp // self.nhead
-                rope_vals_x = get_rope_vals(
-                    x["main"].flatten(), head_dim, multiplier=self.rope_multiplier
-                ).view(_batch_size, _seq_len, num_groups_main, head_dim)
-                rope_vals_y = torch.ones_like(rope_vals_x[:, :, :1, :]).view(
-                    _batch_size, _seq_len, 1, -1, 2
-                )
-                rope_vals_y[..., 1] = 0.0
-                rope_vals_y = rope_vals_y.view(_batch_size, _seq_len, 1, head_dim)
-                rope_vals = torch.cat((rope_vals_x, rope_vals_y), dim=2)
-            else:
-                assert (
-                    "main" in y and len(y) == 1
-                ), "Positions in attention only supported for simple y"
-                # [batch, seqlen_q, num_feature_blocks, 1]
-                positions = x["main"]  # [_batch_size, _seq_len, num_groups_main, 1]
-                # add positions for y [_batch_size, _seq_len, 1]
-                positions = torch.cat((positions, y["main"].unsqueeze(2)), dim=2)
+        if self.x_only_mode:
+            embedded_y = None
+        else:
+            for k in y:
+                # y[k] is (batch_size, current_seq_len_y, num_targets_y)
+                if y[k].ndim == 2:  # (B,S) or (B,T)
+                    y[k] = y[k].unsqueeze(-1)  # B S -> B S 1
 
-        del y, y_for_y_encoder
-        if torch.isnan(embedded_y).any():
-            raise ValueError(
-                f"{torch.isnan(embedded_y).any()=}, make sure to add nan handlers"
-                " to the ys that are not fully provided (test set missing)",
-            )
+                # Pad y sequence length if shorter than x's sequence length (_seq_len)
+                if y[k].shape[1] < _seq_len:  # _seq_len is full sequence length from x
+                    # current_context_len is the length of the training part of y
+                    assert (
+                        y[k].shape[1]
+                        == current_context_len  # y should only contain train part if shorter
+                        or y[k].shape[1]
+                        == _seq_len  # Should not happen if already shorter
+                    ), f"y[{k}] seq len {y[k].shape[1]} vs train_seq_len {current_context_len} vs x_seq_len {_seq_len}"
+
+                    # Only pad if y is for training part or not main y (auxiliary targets might be full length)
+                    if k != "main" or y[k].shape[1] == current_context_len:
+                        y[k] = torch.cat(
+                            (
+                                y[k],
+                                torch.nan
+                                * torch.zeros(
+                                    y[k].shape[0],  # batch_size
+                                    _seq_len - y[k].shape[1],  # seq_len difference
+                                    y[k].shape[2],  # num_targets_y
+                                    device=y[k].device,
+                                    dtype=y[k].dtype,
+                                ),
+                            ),
+                            dim=1,  # Pad along sequence dimension (dim 1 for batch-first)
+                        )
+                # Now y[k] is (batch_size, _seq_len, num_targets_y)
+
+            # Making sure no label leakage ever happens for y["main"] (batch-first indexing)
+            # current_context_len is the length of the training data part
+            if "main" in y and y["main"].shape[1] > current_context_len:
+                y["main"][:, current_context_len:] = torch.nan
+
+            # Prepare y for y_encoder (transpose to sequence-first if y_encoder expects it)
+            y_for_y_encoder = {}
+            for k_enc, v_enc in y.items():
+                y_for_y_encoder[k_enc] = v_enc.transpose(0, 1)  # B S T -> S B T
+
+            embedded_y = self.y_encoder(
+                y_for_y_encoder,
+                single_eval_pos=current_context_len,  # Length of training part for y_encoder
+                cache_trainset_representation=self.cache_trainset_representation,
+            ).transpose(0, 1)
+
+            if self.use_rope or self.positions_num_measures > 0:
+                assert (
+                    self.attention_between_features
+                ), "Rope only supported for attention_between_features=True"
+                assert (
+                    self.features_per_group == 1
+                ), "Rope only supported for features_per_group=1"
+                assert not (
+                    self.use_rope and (self.positions_num_measures > 0)
+                ), "Rope and positions_num_measures > 0 not supported at the same time"
+                if self.use_rope:
+                    head_dim = self.ninp // self.nhead
+                    rope_vals_x = get_rope_vals(
+                        x["main"].flatten(), head_dim, multiplier=self.rope_multiplier
+                    ).view(_batch_size, _seq_len, num_groups_main, head_dim)
+                    rope_vals_y = torch.ones_like(rope_vals_x[:, :, :1, :]).view(
+                        _batch_size, _seq_len, 1, -1, 2
+                    )
+                    rope_vals_y[..., 1] = 0.0
+                    rope_vals_y = rope_vals_y.view(_batch_size, _seq_len, 1, head_dim)
+                    rope_vals = torch.cat((rope_vals_x, rope_vals_y), dim=2)
+                else:
+                    assert (
+                        "main" in y and len(y) == 1
+                    ), "Positions in attention only supported for simple y"
+                    # [batch, seqlen_q, num_feature_blocks, 1]
+                    positions = x["main"]  # [_batch_size, _seq_len, num_groups_main, 1]
+                    # add positions for y [_batch_size, _seq_len, 1]
+                    positions = torch.cat((positions, y["main"].unsqueeze(2)), dim=2)
+
+            del y, y_for_y_encoder
+            if torch.isnan(embedded_y).any():
+                raise ValueError(
+                    f"{torch.isnan(embedded_y).any()=}, make sure to add nan handlers"
+                    " to the ys that are not fully provided (test set missing)",
+                )
 
         extra_encoders_args = {}
         if categorical_inds_to_use is not None and isinstance(
@@ -562,13 +589,13 @@ class TableTransformer(nn.Module):
                 **extra_encoders_args,
             ),
             "s (b f) e -> b s f e",
-            b=embedded_y.shape[0],
+            b=_batch_size,
         )  # b s f 1 -> b s f e
         del x
 
         embedded_x, embedded_y = self.add_embeddings(
             embedded_x,  # (b s num_groups e)
-            embedded_y,  # (b s e)
+            embedded_y,  # (b s e) | None
             num_features=_num_features_orig_main,
             seq_len=_seq_len,
             cache_embeddings=(
@@ -580,9 +607,16 @@ class TableTransformer(nn.Module):
         )
 
         if self.attention_between_features:
-            # b s f e + b s 1 e -> b s f+1 e
-            embedded_input = torch.cat((embedded_x, embedded_y.unsqueeze(2)), dim=2)
+            if self.x_only_mode:
+                embedded_input = embedded_x
+            else:
+                # b s f e + b s 1 e -> b s f+1 e
+                embedded_input = torch.cat((embedded_x, embedded_y.unsqueeze(2)), dim=2)
+
         else:
+            assert (
+                not self.x_only_mode
+            ), "x_only_mode is not supported when attention_between_features is False"
             # add them together in this case, like for the original PFNs
             assert (
                 embedded_x.shape[2] == 1
@@ -630,8 +664,17 @@ class TableTransformer(nn.Module):
                     device=embedded_input.device,
                     dtype=embedded_input.dtype,
                 )
+            else:
+                assert (
+                    not self.x_only_mode
+                ), "x_only_mode is not supported when embedded_y_style is not None"
 
-            full_embedded_style = torch.cat((embedded_style, embedded_y_style), dim=2)
+            if self.x_only_mode:
+                full_embedded_style = embedded_style
+            else:
+                full_embedded_style = torch.cat(
+                    (embedded_style, embedded_y_style), dim=2
+                )
 
             embedded_input = torch.cat(
                 (full_embedded_style, embedded_input),
@@ -644,7 +687,7 @@ class TableTransformer(nn.Module):
                 f"There should be no NaNs in the encoded x and y."
                 "Check that you do not feed NaNs or use a NaN-handling enocder."
                 "Your embedded x and y returned the following:"
-                f"{torch.isnan(embedded_x).any()=} | {torch.isnan(embedded_y).any()=}",
+                f"{torch.isnan(embedded_x).any()=} | {(embedded_y is not None and torch.isnan(embedded_y).any())=}",
             )
         del embedded_y, embedded_x
 
@@ -665,11 +708,19 @@ class TableTransformer(nn.Module):
         # for the test sequence part (after current_context_len).
 
         test_encoder_out = encoder_out[
-            :, current_context_len:, -1
-        ]  # (batch, seq_test, embed_dim)
+            :, current_context_len:, :
+        ]  # (batch, seq_test, num_groups[+1_for_y], embed_dim)
         train_encoder_out = encoder_out[
-            :, :current_context_len, -1
-        ]  # (batch, seq_train_and_style, embed_dim)
+            :, :current_context_len, :
+        ]  # (batch, seq_train_and_style, num_groups[+1_for_y], embed_dim)
+
+        if not self.x_only_mode:
+            test_encoder_out = test_encoder_out[
+                :, :, -1, :
+            ]  # (batch, seq_test, embed_dim)
+            train_encoder_out = train_encoder_out[
+                :, :, -1, :
+            ]  # (batch, seq_train_and_style, embed_dim)
 
         # No transposition needed here as _forward returns batch-first
 
@@ -687,7 +738,7 @@ class TableTransformer(nn.Module):
     def add_embeddings(  # noqa: C901, PLR0912
         self,
         x: torch.Tensor,  # (b s num_groups e)
-        y: torch.Tensor,  # (b s e)
+        y: torch.Tensor | None,  # (b s e)
         *,
         num_features: int,  # Original number of features (before grouping)
         seq_len: int,  # Sequence length

@@ -68,8 +68,14 @@ class Batch:
 
     # Required entries
     x: torch.Tensor
-    y: torch.Tensor
-    target_y: torch.Tensor
+
+    # Entries when using sep. y
+    y: torch.Tensor | None
+    target_y: torch.Tensor | None
+
+    # Entries for x_only_mode
+    target: torch.Tensor | None = None
+    test_x: torch.Tensor | None = None
 
     # Optional Batch Entries
     style: Optional[torch.Tensor] = None

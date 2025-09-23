@@ -8,7 +8,6 @@ import typing as tp
 from contextlib import nullcontext
 from dataclasses import dataclass
 
-import einops
 import torch
 from torch import nn
 from torch.amp import autocast, GradScaler
@@ -417,6 +416,10 @@ def train_or_evaluate_epoch(
 
     metrics = Metrics(steps_per_epoch=len(dl))
 
+    # Whether the prior does not return y, but but instead uses
+    # a separate x_test and target.
+    x_only_mode = c.model.x_only_mode
+
     importance_sampling_infos = []
 
     before_get_batch = time.time()
@@ -437,7 +440,11 @@ def train_or_evaluate_epoch(
             assert (
                 c.model.features_per_group == batch.x.shape[2]
             ), "features_per_group must match the number of features in the input, if attention_between_features is False"
-        targets = batch.target_y.to(device)
+
+        if x_only_mode:
+            targets = batch.target.to(device)
+        else:
+            targets = batch.target_y.to(device)
         single_eval_pos = batch.single_eval_pos
 
         if tqdm_iter is not None:
@@ -460,33 +467,49 @@ def train_or_evaluate_epoch(
             before_forward = time.time()
             try:
                 with autocast(device.split(":")[0], enabled=scaler is not None):
-                    output = model(
-                        x=batch.x.to(device),
-                        y=batch.y[:, :single_eval_pos].to(device),
-                        style=move_style_and_check_shape(batch.style, batch.x, device),
-                        y_style=move_y_style_and_check_shape(
-                            batch.y_style, batch.y, device
-                        ),
-                        only_return_standard_out=True,
-                    )  # shape: (batch_size, test_len)
+                    if x_only_mode:
+                        assert (
+                            batch.target_y is None
+                            and batch.y is None
+                            and batch.y_style is None
+                        ), "model.x_only_mode is not supported when y, target_y, or y_style are not None"
+                        output = model(
+                            x=batch.x.to(
+                                device
+                            ),  # shape: (batch_size, train_len, num_features)
+                            test_x=batch.test_x.to(
+                                device
+                            ),  # shape: (batch_size, test_len, num_features)
+                            y=None,
+                            style=move_style_and_check_shape(
+                                batch.style, batch.x, device
+                            ),
+                            only_return_standard_out=True,
+                        )  # shape: (batch_size, test_len, num_groups)
+                    else:
+                        output = model(
+                            x=batch.x.to(device),
+                            y=batch.y[:, :single_eval_pos].to(device),
+                            style=move_style_and_check_shape(
+                                batch.style, batch.x, device
+                            ),
+                            y_style=move_y_style_and_check_shape(
+                                batch.y_style, batch.y, device
+                            ),
+                            only_return_standard_out=True,
+                        )  # shape: (batch_size, test_len)
 
                     forward_time = time.time() - before_forward
 
-                    if single_eval_pos is not None:
+                    if single_eval_pos is not None and not x_only_mode:
                         targets = targets[
                             :, single_eval_pos:
                         ]  # shape: (batch_size, test_len)
 
-                    losses = compute_losses(
-                        output, targets, criterion, c.n_targets_per_input
-                    )  # shape: (batch_size, test_len)
+                    loss, nan_share = compute_loss(
+                        output, targets, criterion, c.n_targets_per_input, x_only_mode
+                    )  # shape: (batch_size, test_len) | (batch_size, test_len, n_features)
 
-                    loss, nan_share = utils.torch_nanmean(
-                        losses.mean(
-                            1
-                        ),  # loss per sequence without nanmean, if any loss in a sequence is nan, the whole sequence is ignored
-                        return_nanshare=True,
-                    )  # loss and nan_share are both scalar tensors
                     loss_scaled = loss / c.aggregate_k_gradients
 
                 if scaler:
@@ -576,34 +599,38 @@ def train_or_evaluate_epoch(
     return metrics.get_epoch_result(importance_sampling_infos)
 
 
-def compute_losses(
+def compute_loss(
     output: torch.Tensor,
     targets: torch.Tensor,
     criterion: torch.nn.Module,
     n_targets_per_input: int,
+    x_only_mode: bool,
 ):
     """
     Compute the losses for the given output and targets.
 
     Args:
-        output: The output of the model, shape (batch_size, num_eval_positions, n_out)
-        targets: The targets, shape (batch_size, num_eval_positions[, n_targets_per_input])
+        output: The output of the model, shape (batch_size, num_eval_positions, n_out) | (batch_size, num_eval_positions, n_features, n_out)
+        targets: The targets, shape (batch_size, num_eval_positions[, n_targets_per_input]) | (batch_size, num_eval_positions, n_features, n_targets_per_input)
         criterion: The criterion to use.
         n_targets_per_input: The number of targets per input.
 
     Returns:
         The losses, shape (batch_size, num_eval_positions)
     """
-    # Repeat output in the semi-last dimension n_targets_per_input times
-    output = output.unsqueeze(2).expand(
-        *output.shape[:2],
-        n_targets_per_input,
-        output.shape[-1],
-    )
+    if (
+        len(output.shape) == 3
+    ):  # else it is (batch_size, num_eval_positions, n_features, n_out)
+        # Repeat output in the semi-last dimension n_targets_per_input times
+        output = output.unsqueeze(2).expand(
+            *output.shape[:2],
+            n_targets_per_input,
+            output.shape[-1],
+        )
 
-    if len(targets.shape) == 2:
-        # This implies we only have a single target per input
-        targets = targets.unsqueeze(2)
+        if len(targets.shape) == 2:
+            # This implies we only have a single target per input
+            targets = targets.unsqueeze(2)
 
     assert targets.shape == output.shape[:-1], (
         f"Target shape {targets.shape} "
@@ -611,9 +638,6 @@ def compute_losses(
         f"This might be because you are missing trailing "
         "1 dimension in the target."
     )
-
-    output = einops.rearrange(output, "b s t l -> (b t) s l")
-    targets = einops.rearrange(targets, "b s t -> (b t) s")
 
     if isinstance(criterion, nn.GaussianNLLLoss):
         assert (
@@ -639,9 +663,21 @@ def compute_losses(
         )
     else:
         losses = criterion(output, targets.unsqueeze(-1))
-    losses = einops.rearrange(losses, "(b t) s -> b s t", t=n_targets_per_input)
-    losses = losses.mean(-1)
-    return losses
+    # mean over the last dimension (either features or target repetitions)
+    if x_only_mode:
+        loss = losses[~torch.isnan(targets)].mean()
+        nan_share = torch.tensor(0.0)
+    else:
+        losses = losses.mean(-1)
+
+        loss, nan_share = utils.torch_nanmean(
+            losses.mean(
+                1
+            ),  # loss per sequence without nanmean, if any loss in a sequence is nan, the whole sequence is ignored
+            return_nanshare=True,
+        )  # loss and nan_share are both scalar tensors
+
+    return loss, nan_share
 
 
 def should_load_checkpoint(

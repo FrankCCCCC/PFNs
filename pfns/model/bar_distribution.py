@@ -223,14 +223,13 @@ class BarDistribution(nn.Module):
         """Returns the negative log density (the _loss_).
 
         Args:
-            logits: The logits of the model.
-            y: The ys to compute the loss for.
+            logits: The logits of the model, shape (*batch_shape, num_bars)
+            y: The ys to compute the loss for, shape (*batch_shape,)
 
         Returns:
             The negative log density.
         """
         # gives the negative log density (the _loss_),
-        # y: T x B, logits: T x B x self.num_bars
         y = y.clone().view(*logits.shape[:-1])  # no trailing one dimension
         ignore_loss_mask = self.ignore_init(y)
         target_sample = self.map_to_bucket_idx(y)
@@ -244,7 +243,6 @@ class BarDistribution(nn.Module):
 
         scaled_bucket_log_probs = self.compute_scaled_log_probs(logits)
 
-        # T x B
         nll_loss = -scaled_bucket_log_probs.gather(
             -1,
             target_sample[..., None],
@@ -884,6 +882,14 @@ def get_bucket_borders(
     unique_borders = torch.unique_consecutive(borders)
 
     if len(unique_borders) != len(borders):
-        print("Borders were not unique, removed duplicates.")
+        duplicates = [
+            borders[i].item()
+            for i in range(len(borders) - 1)
+            if borders[i] == borders[i + 1]
+        ]
+        print(
+            f"Borders were not unique, removed {len(duplicates)} duplicates:",
+            duplicates,
+        )
 
     return unique_borders

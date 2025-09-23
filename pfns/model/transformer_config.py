@@ -36,6 +36,7 @@ class TransformerConfig(base_config.BaseConfig):
     use_rope: bool = False
     rope_multiplier: float = 1
     positions_num_measures: int = 0
+    x_only_mode: bool = False
 
     def create_model(self) -> transformer.TableTransformer:
         # Resolve criterion
@@ -94,6 +95,7 @@ class TransformerConfig(base_config.BaseConfig):
             use_rope=self.use_rope,
             rope_multiplier=self.rope_multiplier,
             positions_num_measures=self.positions_num_measures,
+            x_only_mode=self.x_only_mode,
             **(self.model_extra_args or {}),
         )
         model.criterion = criterion
