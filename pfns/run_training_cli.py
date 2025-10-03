@@ -113,12 +113,6 @@ def load_config_from_python(
                 ), "config_index is not 0 but get_config is not defined"
                 config = config_module.config
 
-            # Validate that it is a MainConfig instance
-            if not isinstance(config, pfns.train.MainConfig):
-                raise TypeError(
-                    f"'config' variable must be a MainConfig instance, got {config.__class__.__name__}"
-                )
-
             print(f"Successfully loaded config from {config_file}")
             return config
 
@@ -137,6 +131,12 @@ def main():
 
     # Load configuration from Python file
     config = load_config_from_python(args.config_file, args.config_index)
+
+    # Validate that it is a MainConfig instance
+    if not isinstance(config, pfns.train.MainConfig):
+        raise TypeError(
+            f"'config' variable must be a MainConfig instance, got {config.__class__.__name__}"
+        )
 
     def get_filename(config_file):
         return f"{config_file.split('/')[-1].split('.')[0]}"
