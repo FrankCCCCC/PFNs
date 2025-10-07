@@ -340,7 +340,7 @@ class MultiHeadAttention(torch.nn.Module):
         # Flatten the batch dimensions
         x, x_kv, x_shape_after_transpose = self._rearrange_inputs_to_flat_batch(x, x_kv)
         if rope_vals is not None:
-            rope_vals = rope_vals.view(-1, *rope_vals.shape[-2:])
+            rope_vals = rope_vals.reshape(-1, *rope_vals.shape[-2:])
 
         # flatten positions' batch dims, just like x and x_kv are flattened
         positions_flat = None
