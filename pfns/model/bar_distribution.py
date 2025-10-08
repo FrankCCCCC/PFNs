@@ -298,6 +298,16 @@ class BarDistribution(nn.Module):
             idx[..., None],
         ).squeeze(-1)
 
+    def sample(self, logits: torch.Tensor, t: float = 1.0) -> torch.Tensor:
+        """Samples values from the distribution.
+
+        Temperature t.
+        """
+        p_cdf = torch.rand(*logits.shape[:-1])
+        return torch.tensor(
+            [self.icdf(logits[i, :] / t, p) for i, p in enumerate(p_cdf.tolist())],
+        )
+
     def quantile(
         self,
         logits: torch.Tensor,
@@ -583,16 +593,6 @@ class FullSupportBarDistribution(BarDistribution):
     def pdf(self, logits: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """Probability density function at y."""
         return torch.exp(self.forward(logits, y))
-
-    def sample(self, logits: torch.Tensor, t: float = 1.0) -> torch.Tensor:
-        """Samples values from the distribution.
-
-        Temperature t.
-        """
-        p_cdf = torch.rand(*logits.shape[:-1])
-        return torch.tensor(
-            [self.icdf(logits[i, :] / t, p) for i, p in enumerate(p_cdf.tolist())],
-        )
 
     @override
     def mean(self, logits: torch.Tensor) -> torch.Tensor:

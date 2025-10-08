@@ -148,6 +148,7 @@ class StyleEncoderConfig(base_config.BaseConfig):
 
         if self.encoder_type == "linear":
             modules.append(encoders.linear_style_encoder(num_features, emsize))
+            modules.append(nn.Flatten())
             return nn.Sequential(*modules)
         else:
             raise ValueError(
