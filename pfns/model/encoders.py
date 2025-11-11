@@ -121,6 +121,26 @@ class EncoderConfig(base_config.BaseConfig):
 ### Style Encoders
 
 
+class ConstantStyleNormalization(nn.Module):
+    def __init__(self, mean, std):
+        super().__init__()
+        self.mean = mean
+        self.std = std
+
+    def forward(self, x):
+        return (x - self.mean) / self.std
+
+
+class NanHandlingStyleEncoder(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x):
+        nan_indicators = torch.isnan(x).float() * 2.0 - 1
+        x = torch.nan_to_num(x, nan=0.0)
+        return torch.cat([x, nan_indicators], dim=-1)
+
+
 def linear_style_encoder(num_styles, emsize):
     return nn.Linear(num_styles, emsize)
 
@@ -132,6 +152,16 @@ class StyleEncoderConfig(base_config.BaseConfig):
         dict[str, base_config.BaseTypes | DistributionConfig] | None
     ) = None
     encoder_type: str = "linear"
+    constant_normalization_mean: float = 0.0
+    constant_normalization_std: float = 1.0
+    nan_handling: bool | None = None
+
+    def __post_init__(self):
+        if self.normalize_to_hyperparameters is not None:
+            assert self.constant_normalization_mean == 0.0
+            assert self.constant_normalization_std == 1.0
+            assert self.nan_handling is None
+            assert self.num_styles is None
 
     def create_encoder(self, emsize):
         num_features = self.num_styles
@@ -145,6 +175,17 @@ class StyleEncoderConfig(base_config.BaseConfig):
             hpn = HyperparameterNormalizer(self.normalize_to_hyperparameters)
             num_features = hpn.num_hps * 2
             modules.append(hpn)
+        else:
+            assert self.num_styles is not None
+            normalizer = ConstantStyleNormalization(
+                mean=self.constant_normalization_mean,
+                std=self.constant_normalization_std,
+            )
+            modules.append(normalizer)
+
+            if self.nan_handling:
+                modules.append(NanHandlingStyleEncoder())
+                num_features *= 2
 
         if self.encoder_type == "linear":
             modules.append(encoders.linear_style_encoder(num_features, emsize))

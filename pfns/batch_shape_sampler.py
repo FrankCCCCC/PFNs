@@ -49,7 +49,6 @@ class BatchShapeSamplerConfig(BaseConfig):
         single_eval_pos = rng.randint(
             self.min_single_eval_pos,
             self.max_seq_len
-            - 1
             - (
                 self.fixed_num_test_instances
                 if self.fixed_num_test_instances is not None
