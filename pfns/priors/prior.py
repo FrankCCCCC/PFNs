@@ -20,9 +20,11 @@ class PriorConfig(BaseConfig, metaclass=ABCMeta):
 @dataclass(frozen=True)
 class AdhocPriorConfig(PriorConfig):
     # Set as a class variable instead of being set at init
-    prior_names: str | Sequence[str] | None = None
+    prior_names: list[str] | None = None
     get_batch_methods: Callable | Sequence[Callable] | None = None
     prior_kwargs: dict | None = None
+    prior_dirs: str | list[str] = "pfns.priors"
+    get_batch_names: str | list[str] = "get_batch"
 
     strict_field_types: ClassVar[bool] = False
 
@@ -36,13 +38,21 @@ class AdhocPriorConfig(PriorConfig):
 
         if self.prior_names is not None:
             get_batch_methods = []
-            for prior_name in (
-                self.prior_names
-                if isinstance(self.prior_names, Sequence)
-                else [self.prior_names]
-            ):
-                prior_module = importlib.import_module(f"pfns.priors.{prior_name}")
-                get_batch_methods.append(prior_module.get_batch)
+            get_batch_names = (
+                self.get_batch_names
+                if isinstance(self.get_batch_names, list)
+                else [self.get_batch_names] * len(self.prior_names)
+            )
+            prior_dirs = (
+                self.prior_dirs
+                if isinstance(self.prior_dirs, list)
+                else [self.prior_dirs] * len(self.prior_names)
+            )
+            assert len(self.prior_names) == len(get_batch_names) == len(prior_dirs)
+
+            for i, prior_name in enumerate(self.prior_names):
+                prior_module = importlib.import_module(f"{prior_dirs[i]}.{prior_name}")
+                get_batch_methods.append(getattr(prior_module, get_batch_names[i]))
         else:
             get_batch_methods = (
                 self.get_batch_methods
