@@ -44,10 +44,18 @@ class UniformFloatDistConfig(DistributionConfig):
 
     def normalize(self, value: torch.Tensor) -> torch.Tensor:
         if self.log:
-            return (torch.log(value) - math.log(self.lower)) / (
-                math.log(self.upper) - math.log(self.lower)
+            return (torch.log(value) - torch.log(self.lower)) / (
+                torch.log(self.upper) - torch.log(self.lower)
             )
         return (value - self.lower) / (self.upper - self.lower)
+
+    def unnormalize(self, encoded_value: torch.Tensor) -> torch.Tensor:
+        if self.log:
+            return torch.exp(
+                encoded_value * (torch.log(self.upper) - torch.log(self.lower))
+                + torch.log(self.lower)
+            )
+        return encoded_value * (self.upper - self.lower) + self.lower
 
     def encode_to_torch(self, value):
         assert (value >= self.lower) and (
@@ -95,6 +103,12 @@ class PowerUniformFloatDistConfig(DistributionConfig):
             transformed_upper - transformed_lower
         )
 
+    def unnormalize(self, encoded_value: torch.Tensor) -> torch.Tensor:
+        transformed_value = encoded_value * (
+            self.upper ** (1 / self.power) - self.lower ** (1 / self.power)
+        ) + self.lower ** (1 / self.power)
+        return torch.pow(transformed_value, self.power)
+
     def encode_to_torch(self, value):
         assert (value >= self.lower) and (
             value <= self.upper
@@ -127,6 +141,14 @@ class UniformIntegerDistConfig(DistributionConfig):
             )
         return (value - self.lower) / (self.upper - self.lower)
 
+    def unnormalize(self, encoded_value):
+        if self.log:
+            return torch.exp(
+                encoded_value * (math.log(self.upper) - math.log(self.lower))
+                + math.log(self.lower)
+            )
+        return encoded_value * (self.upper - self.lower) + self.lower
+
     def encode_to_torch(self, value):
         assert (value >= self.lower) and (
             value <= self.upper
@@ -148,6 +170,10 @@ class ChoiceDistConfig(DistributionConfig):
     def normalize(self, value: torch.Tensor):
         # Return one-hot encoding of the choice
         return value / (len(self.choices) - 1)
+
+    def unnormalize(self, encoded_value: torch.Tensor):
+        # Return the index of the one-hot encoded value
+        return encoded_value * (len(self.choices) - 1)
 
 
 def sample_hyperparameters(config):

@@ -58,12 +58,12 @@ def sample_around_train_point(
     num_features,
     single_eval_pos,
     surrounding_std: float = 0.01,
-    surrouding_prob: float = 0.5,
+    surrouding_share: float = 0.5,
 ):
     train_x = torch.rand(batch_size, single_eval_pos, num_features)
 
     num_test_points = seq_len - single_eval_pos
-    num_surrounding = int(num_test_points * surrouding_prob)
+    num_surrounding = int(num_test_points * surrouding_share)
 
     normal_test_x = torch.rand(
         batch_size, num_test_points - num_surrounding, num_features
@@ -134,7 +134,7 @@ def get_batch(
             "mean_dist": "uniform",
             "attsink_tokens": 0,
             "noisy_predictions": False,
-            "sample_clustered_x": False,
+            "sample_strategy": "uniform",
             "train_normalized_y": False,
             "style_for_max_on_border_likelihood": False,
             "dummy_dim_prob": 0.0,

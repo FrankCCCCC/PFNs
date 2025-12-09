@@ -264,6 +264,10 @@ def get_batch(
 
         # set inputs that are hidden to nan
         full_test_x[:, :num_1_test_points, :][target_mask] = torch.nan
+
+        # copy over the targets, such that we don't condition on noisy values
+        full_test_x[:, :num_1_test_points, -1] = full_target[:, :num_1_test_points, -1]
+
         full_target[:, :num_1_test_points, :][~target_mask] = torch.nan
 
     # finally let's do case 2

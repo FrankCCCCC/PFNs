@@ -1,7 +1,5 @@
 import torch
 
-from ..utils import default_device
-
 from .prior import Batch
 
 
@@ -11,8 +9,7 @@ def get_batch(
     seq_len,
     num_features,
     get_batch,
-    epoch,
-    device=default_device,
+    device="cpu",
     hyperparameters=None,
     **kwargs,
 ):
@@ -31,7 +28,6 @@ def get_batch(
     :param seq_len:
     :param num_features:
     :param get_batch:
-    :param epoch:
     :param device:
     :param hyperparameters:
     :param kwargs:
@@ -42,65 +38,69 @@ def get_batch(
         hyperparameters = {}
 
     maximize = hyperparameters.get("condition_on_area_maximize", True)
-    size_range = hyperparameters.get("condition_on_area_size_range", (0.1, 0.5))
+    size_range = hyperparameters.get("condition_on_area_size_range", (0.2, 0.99))
     distribution = hyperparameters.get("condition_on_area_distribution", "uniform")
     assert distribution in ["uniform"]
+    extra_samples = hyperparameters.get("condition_on_area_extra_samples", 0)
 
     batch: Batch = get_batch(
         batch_size=batch_size,
-        seq_len=seq_len,
+        seq_len=seq_len + extra_samples,
         num_features=num_features,
         device=device,
         hyperparameters=hyperparameters,
-        epoch=epoch,
         **kwargs,
     )
     assert batch.style is None
 
     d = batch.x.shape[2]
 
-    prob_correct = torch.rand(batch_size, d, device=device)
-    correct_opt = torch.rand(batch_size, d, device=device) < prob_correct
     division_size = (
         torch.rand(batch_size, d, device=device) * (size_range[1] - size_range[0])
         + size_range[0]
     )
+    division_start = torch.rand(batch_size, d, device=device) * (1 - division_size)
 
-    optima = (
-        batch.target_y.argmax(0).squeeze()
+    assert batch.target_y.shape[2] == 1, "Only support single objective."
+
+    optima_inds = (
+        batch.target_y.argmax(1).squeeze(-1)
         if maximize
-        else batch.target_y.argmin(0).squeeze()
+        else batch.target_y.argmin(0).squeeze(-1)
     )  # batch_size, d
 
-    optima_hints = (
-        batch.x[optima, torch.arange(batch_size, device=device)]
-        - division_size / 2
-        + torch.rand(batch_size, d, device=device) * division_size
-    )  # shape: (batch_size, d)
-    optima_hints = optima_hints.clamp(0, 1)
+    optima = batch.x[torch.arange(batch_size), optima_inds]  # batch_size, d
 
-    optima_division_lower_bound = (optima_hints - division_size / 2).clamp(0, 1)
-    optima_division_upper_bound = (optima_hints + division_size / 2).clamp(0, 1)
+    is_inside = (division_start <= optima) & (
+        optima <= division_start + division_size
+    )  # batch_size, d
 
-    random_hints = (
-        torch.rand(batch_size, d, device=device)
-        - division_size / 2
-        + torch.rand(batch_size, d, device=device) * division_size
-    )  # shape: (batch_size, d)
-    random_hints = random_hints.clamp(0, 1)
+    # hint_probs = torch.rand(batch_size, d, device=device) # probs are chosen randomly
+    # hint probs need to be drawn dependent on whether it is inside or not
+    # what we want is R ~ Uniform(0, 1), and we now sample p(R=r|Ber(R)=1) and p(R=r|Ber(R)=0)
+    # that is: p(R=r|Ber(R)=1) = r / 0.5 = 2.0 * r, and p(R=r|Ber(R)=0) = (1-r) / 0.5 = 2.0 * (1-r)
+    # we can compute the icdfs as icdf(|Ber(R)=1) = np.sqrt(u), icdf(|Ber(R)=0)= 1 - np.sqrt(1 - u)
 
-    random_division_lower_bound = (random_hints - division_size / 2).clamp(0, 1)
-    random_division_upper_bound = (random_hints + division_size / 2).clamp(0, 1)
-
-    lower_bounds = torch.where(
-        correct_opt, optima_division_lower_bound, random_division_lower_bound
-    )
-    upper_bounds = torch.where(
-        correct_opt, optima_division_upper_bound, random_division_upper_bound
+    hint_probs = torch.where(
+        is_inside,
+        torch.sqrt(torch.rand(batch_size, d, device=device)),
+        1 - torch.sqrt(1 - torch.rand(batch_size, d, device=device)),
     )
 
-    batch.style = torch.stack([prob_correct, lower_bounds, upper_bounds], 2).view(
-        batch_size, -1
-    )  # shape: (batch_size, 3*d)
+    batch.style = torch.stack(
+        [hint_probs, division_start, division_start + division_size], 2
+    )  # batch_size, d, 3
+
+    skip_style_prob = hyperparameters.get("condition_on_opt_area_skip_style_prob", 0.0)
+
+    skip_style_mask = torch.rand(batch_size, device=device) < skip_style_prob
+
+    # set to nan for the encoder to figure this out
+    batch.style[skip_style_mask, :, :] = torch.nan
+
+    if extra_samples:
+        batch.x = batch.x[:, :-extra_samples]
+        batch.y = batch.y[:, :-extra_samples]
+        batch.target_y = batch.target_y[:, :-extra_samples]
 
     return batch
