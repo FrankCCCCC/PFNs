@@ -40,7 +40,13 @@ class BarDistributionConfig(base_config.BaseConfig):
 
 
 class BarDistribution(nn.Module):
-    def __init__(self, borders: torch.Tensor, *, ignore_nan_targets: bool = True):
+    def __init__(
+        self,
+        borders: torch.Tensor,
+        *,
+        ignore_nan_targets: bool = True,
+        probabilities: torch.Tensor | None = None,
+    ):
         """Loss for a distribution over bars. The bars are defined by the borders.
         The loss is the negative log density of the distribution. The density is defined
         as a softmax over the logits, where the softmax is scaled by the width of the
@@ -59,6 +65,7 @@ class BarDistribution(nn.Module):
         assert len(borders.shape) == 1
         borders = borders.contiguous()
         self.register_buffer("borders", borders)
+        self.probabilities = probabilities
         full_width = self.bucket_widths.sum()
 
         assert (1 - (full_width / (self.borders[-1] - self.borders[0]))).abs() < 1e-2, (
@@ -266,25 +273,28 @@ class BarDistribution(nn.Module):
     def median(self, logits: torch.Tensor) -> torch.Tensor:
         return self.icdf(logits, 0.5)
 
-    def icdf(self, logits: torch.Tensor, left_prob: float) -> torch.Tensor:
+    def icdf(self, left_prob: float, logits: torch.Tensor | None) -> torch.Tensor:
         """Implementation of the quantile function
         :param logits: Tensor of any shape, with the last dimension being logits
         :param left_prob: float: The probability mass to the left of the result.
         :return: Position with `left_prob` probability weight to the left.
         """
-        probs = logits.softmax(-1)
+        if logits is None and self.probabilities is not None:
+            probs = self.probabilities
+        else:
+            probs = logits.softmax(-1)
         cumprobs = torch.cumsum(probs, -1)
         idx = (
             torch.searchsorted(
                 cumprobs,
-                left_prob * torch.ones(*cumprobs.shape[:-1], 1, device=logits.device),
+                left_prob * torch.ones(*cumprobs.shape[:-1], 1, device=probs.device),
             )
             .squeeze(-1)
             .clamp(0, cumprobs.shape[-1] - 1)
         )  # this might not do the right for outliers
         cumprobs = torch.cat(
             [
-                torch.zeros(*cumprobs.shape[:-1], 1, device=logits.device),
+                torch.zeros(*cumprobs.shape[:-1], 1, device=probs.device),
                 cumprobs,
             ],
             -1,
@@ -297,16 +307,6 @@ class BarDistribution(nn.Module):
             -1,
             idx[..., None],
         ).squeeze(-1)
-
-    def sample(self, logits: torch.Tensor, t: float = 1.0) -> torch.Tensor:
-        """Samples values from the distribution.
-
-        Temperature t.
-        """
-        p_cdf = torch.rand(*logits.shape[:-1])
-        return torch.tensor(
-            [self.icdf(logits[i, :] / t, p) for i, p in enumerate(p_cdf.tolist())],
-        )
 
     def quantile(
         self,
@@ -593,6 +593,16 @@ class FullSupportBarDistribution(BarDistribution):
     def pdf(self, logits: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
         """Probability density function at y."""
         return torch.exp(self.forward(logits, y))
+
+    def sample(self, logits: torch.Tensor, t: float = 1.0) -> torch.Tensor:
+        """Samples values from the distribution.
+
+        Temperature t.
+        """
+        p_cdf = torch.rand(*logits.shape[:-1])
+        return torch.tensor(
+            [self.icdf(logits[i, :] / t, p) for i, p in enumerate(p_cdf.tolist())],
+        )
 
     @override
     def mean(self, logits: torch.Tensor) -> torch.Tensor:
