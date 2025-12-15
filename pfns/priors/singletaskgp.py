@@ -58,12 +58,12 @@ def sample_around_train_point(
     num_features,
     single_eval_pos,
     surrounding_std: float = 0.01,
-    surrouding_share: float = 0.5,
+    surrounding_share: float = 0.5,
 ):
     train_x = torch.rand(batch_size, single_eval_pos, num_features)
 
     num_test_points = seq_len - single_eval_pos
-    num_surrounding = int(num_test_points * surrouding_share)
+    num_surrounding = int(num_test_points * surrounding_share)
 
     normal_test_x = torch.rand(
         batch_size, num_test_points - num_surrounding, num_features
@@ -117,7 +117,7 @@ def get_batch(
     single_eval_pos,
     hyperparameters=None,
     n_targets_per_input=1,
-    return_infos=False,
+    print_infos=False,
     **kwargs,
 ):
     if hyperparameters is None:
@@ -425,16 +425,17 @@ def get_batch(
     )
     noisy_y[:, single_eval_pos - number_of_y_hidden : single_eval_pos] = torch.nan
 
-    infos = {
-        "lengthscales": length_scales,
-        "noise_variances": noise_variance,
-        "means": mean,
-        "num_important_features": num_important_features,
-        "kernel": kernel_name,
-    }
+    if print_infos:
+        import pprint
+
+        infos = {
+            "lengthscales": length_scales,
+            "noise_variances": noise_variance,
+            "means": mean,
+            "num_important_features": num_important_features,
+            "kernel": kernel_name,
+        }
+        pprint.pprint(infos)
 
     b = Batch(x=x, y=noisy_y, target_y=target_y, style=style)
-    if return_infos:
-        return b, infos
-    else:
-        return b
+    return b

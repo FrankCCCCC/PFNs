@@ -155,7 +155,7 @@ def sample_around_train_point(
     num_features,
     single_eval_pos,
     surrounding_std: float = 0.01,
-    surrouding_share: float = 0.5,
+    surrounding_share: float = 0.5,
     binary_feature_likelihood: float = 0.0,
 ):
     binary_features = (
@@ -170,7 +170,7 @@ def sample_around_train_point(
     ).float()
 
     num_test_points = seq_len - single_eval_pos
-    num_surrounding = int(num_test_points * surrouding_share)
+    num_surrounding = int(num_test_points * surrounding_share)
 
     normal_test_x = torch.rand(
         batch_size, num_test_points - num_surrounding, num_features
