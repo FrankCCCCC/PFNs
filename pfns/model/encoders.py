@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-
 from typing import Any
 
 import numpy as np
 import torch
-
 from pfns import base_config
 from pfns.model import encoders
 from pfns.priors.hyperparameter_sampling import (

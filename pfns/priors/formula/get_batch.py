@@ -2,11 +2,9 @@ import random
 from typing import Literal
 
 import numpy as np
-
 import torch
 
 from .. import Batch
-
 from .ops import binary_ops, unary_ops
 from .trees import evaluate_tree, sample_tree
 

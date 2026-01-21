@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import importlib
-
 import os
 import time
 import typing as tp
@@ -18,9 +17,7 @@ from . import base_config, utils
 from .batch_shape_sampler import BatchShapeSamplerConfig
 from .model.transformer_config import TransformerConfig
 from .optimizer import OptimizerConfig
-
 from .priors import data_loading, prior, utils as priors_utils
-
 from .training_utils import (
     Metrics,
     move_style_and_check_shape,
@@ -382,6 +379,10 @@ def train(
                 data_loader = None
             if writer:
                 writer.close()
+            # Clean up distributed training
+            if using_dist:
+                torch.distributed.destroy_process_group()
+
     return {
         "total_loss": total_loss,
         "model": model.to("cpu"),
@@ -436,10 +437,6 @@ def train_or_evaluate_epoch(
     for batch_index, batch in enumerate(dl):
         batch: prior.Batch = batch  # for IDE support
         # batch.x.shape == (batch_size, seq_len, num_features)
-        if not c.model.attention_between_features:
-            assert (
-                c.model.features_per_group == batch.x.shape[2]
-            ), "features_per_group must match the number of features in the input, if attention_between_features is False"
 
         if x_only_mode:
             targets = batch.target.to(device)

@@ -51,6 +51,9 @@ def get_batch(
         assert sample_clustered_x_hp is None, sample_clustered_x_hp
         x = torch.rand(batch_size, seq_len, num_features)
 
+    no_noise_prob = hyperparameters.get("no_noise_prob", 0.0)
+    no_noise = torch.rand(batch_size) < no_noise_prob
+
     # Sample each batch item separately using SAAS prior
     y_list = []
     noisy_y_list = []
@@ -66,7 +69,10 @@ def get_batch(
 
         # Get noiseless and noisy predictions
         noiseless_y = m.f_prior_sample.to(dtype=torch.float32)
-        noisy_y = m.Y_prior_sample.to(dtype=torch.float32)
+        if no_noise[i]:
+            noisy_y = noiseless_y.clone()
+        else:
+            noisy_y = m.Y_prior_sample.to(dtype=torch.float32)
 
         y_list.append(noiseless_y)
         noisy_y_list.append(noisy_y)

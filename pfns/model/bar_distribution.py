@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from typing import Any, List, TYPE_CHECKING
 
 import torch
-
 from pfns import base_config
 from torch import nn
 from typing_extensions import override
@@ -37,6 +36,12 @@ class BarDistributionConfig(base_config.BaseConfig):
             return FullSupportBarDistribution(**kwargs)
         else:
             return BarDistribution(**kwargs)
+
+    @classmethod
+    def _loading_kwarg_transform(cls, kwargs):
+        if kwargs.pop("sobolev_multiplier", None) is not None:
+            print("WARNING: sobolev_multiplier is not running no more.")
+        return kwargs
 
 
 class BarDistribution(nn.Module):
@@ -271,7 +276,7 @@ class BarDistribution(nn.Module):
         return p @ bucket_means
 
     def median(self, logits: torch.Tensor) -> torch.Tensor:
-        return self.icdf(logits, 0.5)
+        return self.icdf(logits=logits, left_prob=0.5)
 
     def icdf(self, left_prob: float, logits: torch.Tensor | None) -> torch.Tensor:
         """Implementation of the quantile function
@@ -315,7 +320,10 @@ class BarDistribution(nn.Module):
         """
         p_cdf = torch.rand(*logits.shape[:-1])
         return torch.tensor(
-            [self.icdf(logits[i, :] / t, p) for i, p in enumerate(p_cdf.tolist())],
+            [
+                self.icdf(logits=logits[i, :] / t, left_prob=p)
+                for i, p in enumerate(p_cdf.tolist())
+            ],
         )
 
     def quantile(
@@ -326,8 +334,8 @@ class BarDistribution(nn.Module):
         side_probs = (1.0 - center_prob) / 2
         return torch.stack(
             (
-                self.icdf(logits, side_probs),
-                self.icdf(logits, 1.0 - side_probs),
+                self.icdf(logits=logits, left_prob=side_probs),
+                self.icdf(logits=logits, left_prob=1.0 - side_probs),
             ),
             -1,
         )
@@ -362,7 +370,7 @@ class BarDistribution(nn.Module):
         """
         if maximize:
             rest_prob = 1 - rest_prob
-        return self.icdf(logits, rest_prob)
+        return self.icdf(logits=logits, left_prob=rest_prob)
 
     def mode(self, logits: torch.Tensor) -> torch.Tensor:
         density = logits.softmax(-1) / self.bucket_widths
@@ -842,6 +850,8 @@ def get_bucket_borders(
     if ys is not None:
         ys = ys.flatten()
         ys = ys[~torch.isnan(ys)]
+        ys = ys.sort()[0]
+        ys = torch.unique_consecutive(ys)
         assert (
             len(ys) > num_outputs
         ), f"Number of ys :{len(ys)} must be larger than num_outputs: {num_outputs}"
@@ -877,9 +887,9 @@ def get_bucket_borders(
             0,
         )
 
-    assert len(borders) - 1 == num_outputs, (
-        f"len(borders) - 1 == {len(borders) - 1}" f" != {num_outputs} == num_outputs"
-    )
+    assert (
+        len(borders) - 1 == num_outputs
+    ), f"len(borders) - 1 == {len(borders) - 1} != {num_outputs} == num_outputs"
 
     if not widen_borders_factor or widen_borders_factor == 1.0:
         assert (
@@ -889,17 +899,4 @@ def get_bucket_borders(
             full_range[-1] == borders[-1]  # type: ignore
         ), f"{full_range[-1]} != {borders[-1]}"  # type: ignore
 
-    unique_borders = torch.unique_consecutive(borders)
-
-    if len(unique_borders) != len(borders):
-        duplicates = [
-            borders[i].item()
-            for i in range(len(borders) - 1)
-            if borders[i] == borders[i + 1]
-        ]
-        print(
-            f"Borders were not unique, removed {len(duplicates)} duplicates:",
-            duplicates,
-        )
-
-    return unique_borders
+    return borders

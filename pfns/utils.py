@@ -7,9 +7,8 @@ import random
 import re
 
 import numpy as np
-
 import torch
-from torch import nn
+from torch import distributed as dist, nn
 from torch.optim.lr_scheduler import LambdaLR
 
 
@@ -302,20 +301,31 @@ def print_on_master_only(is_master):
 
 def init_dist(device):
     print("init dist")
-    if "LOCAL_RANK" in os.environ:
-        # launched with torch.distributed.launch
+    if "WORLD_SIZE" in os.environ:
+        dist.init_process_group(backend="nccl")
+        distributed = dist.is_available() and dist.is_initialized()
+        rank = dist.get_rank() if distributed else 0
+
+        # Get local rank from environment variable (set by torchrun)
+        local_rank = int(os.environ.get("LOCAL_RANK", 0)) if distributed else 0
+        torch.cuda.set_device(local_rank)
+        print("Initialized rank", rank)
+        print_on_master_only(rank == 0)
+        return distributed, rank, f"cuda:{local_rank}"
+    elif "LOCAL_RANK" in os.environ:
+        # launched with dist.launch
         rank = int(os.environ["LOCAL_RANK"])
-        print("torch.distributed.launch and my rank is", rank)
+        print("dist.launch and my rank is", rank)
         torch.cuda.set_device(rank)
         os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
-        torch.distributed.init_process_group(
+        dist.init_process_group(
             backend="nccl",
             init_method="env://",
             timeout=datetime.timedelta(seconds=20),
             world_size=torch.cuda.device_count(),
             rank=rank,
         )
-        torch.distributed.barrier()
+        dist.barrier()
         print_on_master_only(rank == 0)
         print(
             f"Distributed training on {torch.cuda.device_count()} GPUs, this is rank {rank}, "
@@ -333,14 +343,14 @@ def init_dist(device):
         torch.cuda.set_device(rank)
         # os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
         print("distributed submitit launch and my rank is", rank)
-        torch.distributed.init_process_group(
+        dist.init_process_group(
             backend="nccl",
             init_method="env://",
             timeout=datetime.timedelta(seconds=20),
             world_size=torch.cuda.device_count(),
             rank=rank,
         )
-        torch.distributed.barrier()
+        dist.barrier()
         print_on_master_only(rank == 0)
         print(
             f"Distributed training on {torch.cuda.device_count()} GPUs, this is rank {rank}, "
